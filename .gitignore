@@ -1,0 +1,7 @@
+*.o
+*.swp*
+parasite
+tracer
+tracee
+library.s*
+
